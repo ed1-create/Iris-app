@@ -1,0 +1,2 @@
+biweek_period,model,predicted_adherence,lower_95ci,upper_95ci,forecast_date
+2025-01-15,Prophet,0.8017109481520495,0.7546014061837252,0.8437745719677215,2025-11-17 10:47:55

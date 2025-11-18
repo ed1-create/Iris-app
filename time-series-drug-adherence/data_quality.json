@@ -1,0 +1,9 @@
+{
+  "column_to_drop": [
+    "doctor_name",
+    "patient_taj",
+    "patient_name",
+    "birth_place",
+    ""
+  ]
+}

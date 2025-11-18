@@ -1,0 +1,2 @@
+month,model,predicted_adherence,lower_95ci,upper_95ci,forecast_date
+2025-02,ARIMA,0.8702431556486949,0.7681043094904951,0.9723820018068947,2025-11-17 11:08:15
