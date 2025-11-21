@@ -2635,7 +2635,7 @@ elif st.session_state["section"] == "adherence":
 # -----------------------------------------------------------------------------
 elif st.session_state["section"] == "consumption":
     st.header("💊 Drug Consumption Forecasting Workspace")
-    st.subheader("📊 Monthly Drug Consumption Forecasts")
+    st.subheader("Monthly Drug Consumption Forecasts")
 
     st.markdown(
         """
@@ -2748,7 +2748,7 @@ elif st.session_state["section"] == "consumption":
             model_r2 = r2_score(y_true, y_pred)
 
     # -------- Executive Summary Panel --------
-    st.subheader("📊 Executive Summary Panel")
+    st.subheader("Executive Summary")
 
     col1, col2, col3 = st.columns(3)
 
@@ -2802,7 +2802,7 @@ elif st.session_state["section"] == "consumption":
     st.markdown("<hr/>", unsafe_allow_html=True)
 
     # -------- Top 10 Drugs Forecast Table --------
-    st.subheader("📋 Top 10 Drugs Forecast Table")
+    st.subheader("Forecast Summary Table")
 
     # Calculate average consumption for each drug from historical data
     avg_consumption = consumption_filtered.groupby('atc3_code')['packages'].mean().reset_index()
@@ -2860,7 +2860,7 @@ elif st.session_state["section"] == "consumption":
     st.markdown("<hr/>", unsafe_allow_html=True)
 
     # -------- Consumption Trends Visualization --------
-    st.subheader("📈 Consumption Trends Visualization")
+    st.subheader("Historical Consumption Trends")
 
     # Prepare data for multi-line chart
     colors_professional = [
@@ -2952,7 +2952,7 @@ elif st.session_state["section"] == "consumption":
     st.markdown("<hr/>", unsafe_allow_html=True)
 
     # -------- Individual Drug Drill-Down --------
-    st.subheader("🔍 Individual Drug Drill-Down")
+    st.subheader("Drug-Specific Analysis")
 
     selected_drug = st.selectbox(
         "Select a drug to view detailed analysis",
@@ -3248,7 +3248,7 @@ elif st.session_state["section"] == "consumption":
     st.markdown("<hr/>", unsafe_allow_html=True)
 
     # -------- Forecast Comparison Chart --------
-    st.subheader("📊 Forecast Comparison Chart")
+    st.subheader("Forecast vs Historical Average")
 
     # Merge average consumption into forecast data
     forecast_sorted = forecast_data.merge(avg_consumption, on='atc3_code', how='left')
@@ -3332,7 +3332,7 @@ elif st.session_state["section"] == "consumption":
     st.markdown("<hr/>", unsafe_allow_html=True)
 
     # -------- Model Performance Dashboard --------
-    st.subheader("🤖 Model Performance Dashboard")
+    st.subheader("Model Performance Metrics")
 
     # Calculate aggregate performance metrics from test predictions
     if test_predictions_all is not None and len(test_predictions_all) > 0:
@@ -3405,7 +3405,7 @@ elif st.session_state["section"] == "consumption":
     st.markdown("<hr/>", unsafe_allow_html=True)
 
     # -------- Consumption Heatmap/Comparison --------
-    st.subheader("🔥 Consumption Heatmap")
+    st.subheader("Consumption Heatmap")
 
     # Prepare heatmap data
     heatmap_data = consumption_filtered.pivot_table(
