@@ -281,8 +281,8 @@ st.sidebar.markdown(
 )
 main_section = st.sidebar.radio(
     "Select analytics area",
-    ["👥 Patient Segmentation", "💊 Drug Adherence Prediction"],
-    index=0 if st.session_state["section"] == "segmentation" else 1,
+    ["👥 Patient Segmentation", "💊 Drug Adherence Prediction", "💊 Drug Consumption Forecasting"],
+    index=0 if st.session_state["section"] == "segmentation" else (1 if st.session_state["section"] == "adherence" else 2),
     label_visibility="collapsed",
 )
 
@@ -309,6 +309,9 @@ if main_section.startswith("👥"):
     )
     cohort = "i10" if sub_segment.startswith("🩺") else "z01"
     st.session_state["cohort"] = cohort
+
+elif main_section.startswith("💊") and "Consumption" in main_section:
+    st.session_state["section"] = "consumption"
 
 else:
     st.session_state["section"] = "adherence"
@@ -2626,6 +2629,834 @@ elif st.session_state["section"] == "adherence":
         st.error(f"Error generating forecast: {e}")
         import traceback
         st.code(traceback.format_exc())
+
+# -----------------------------------------------------------------------------
+# DRUG CONSUMPTION FORECASTING MODULE
+# -----------------------------------------------------------------------------
+elif st.session_state["section"] == "consumption":
+    st.header("💊 Drug Consumption Forecasting Workspace")
+    st.subheader("📊 Monthly Drug Consumption Forecasts")
+
+    st.markdown(
+        """
+        <div class="info-box">
+            <h3 style="margin-bottom:4px;">Consumption forecasting scope</h3>
+            <p style="margin-bottom:0;">Drug consumption is forecasted using <strong>RF+SARIMA Average</strong> models for the <strong>top 10 drugs</strong> (by ATC3 code) with monthly-level predictions.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Data loading functions
+    @st.cache_data
+    def load_consumption_data():
+        """Load historical consumption data"""
+        try:
+            data_path = Path("tsfdc/data/atc3_monthly_full.csv")
+            if not data_path.exists():
+                return None
+            df = pd.read_csv(data_path)
+            df['month_start'] = pd.to_datetime(df['month_start'])
+            return df
+        except Exception as e:
+            st.error(f"Error loading consumption data: {e}")
+            return None
+
+    @st.cache_data
+    def load_forecast_data():
+        """Load forecast data for top 10 drugs"""
+        try:
+            data_path = Path("tsfdc/forecast_plots/all_top10_forecasts.csv")
+            if not data_path.exists():
+                return None
+            df = pd.read_csv(data_path)
+            df['forecast_date'] = pd.to_datetime(df['forecast_date'])
+            df['last_observed_date'] = pd.to_datetime(df['last_observed_date'])
+            return df
+        except Exception as e:
+            st.error(f"Error loading forecast data: {e}")
+            return None
+
+    def get_atc3_description(atc3_code):
+        """Get drug description for ATC3 code"""
+        atc3_descriptions = {
+            "C09B": "ACE inhibitors and diuretics",
+            "A02B": "Drugs for peptic ulcer and GERD",
+            "C07A": "Beta blocking agents",
+            "M01A": "Anti-inflammatory and antirheumatic",
+            "N05B": "Anxiolytics",
+            "B01A": "Antithrombotic agents",
+            "C10A": "Lipid modifying agents",
+            "C09A": "ACE inhibitors",
+            "A10B": "Blood glucose lowering drugs",
+            "N02A": "Opioids"
+        }
+        return atc3_descriptions.get(atc3_code, atc3_code)
+
+    # Load data
+    consumption_data = load_consumption_data()
+    forecast_data = load_forecast_data()
+
+    if consumption_data is None or forecast_data is None:
+        st.error("Failed to load consumption or forecast data. Please check data files.")
+        st.stop()
+
+    # Filter to top 10 drugs from forecast data
+    top10_atc3_codes = forecast_data['atc3_code'].unique().tolist()
+    consumption_filtered = consumption_data[consumption_data['atc3_code'].isin(top10_atc3_codes)].copy()
+
+    # Use Random Forest forecast directly (no averaging)
+    # forecast_data already has 'rf_forecast' column, we'll use it directly
+
+    # Load test predictions to calculate model metrics
+    @st.cache_data
+    def load_test_predictions():
+        """Load test predictions for metrics calculation"""
+        try:
+            test_pred_path = Path("tsfdc/forecast_plots/test_predictions_all_top10.csv")
+            if test_pred_path.exists():
+                df = pd.read_csv(test_pred_path)
+                df['month_start'] = pd.to_datetime(df['month_start'])
+                return df
+            return None
+        except Exception:
+            return None
+
+    test_predictions_all = load_test_predictions()
+    
+    # Calculate aggregate metrics from test predictions
+    model_mae = None
+    model_rmse = None
+    model_mape = None
+    model_r2 = None
+    
+    if test_predictions_all is not None and len(test_predictions_all) > 0:
+        # Filter out rows where actual is NaN or 0 (if needed)
+        test_pred_valid = test_predictions_all.dropna(subset=['forecast', 'actual'])
+        test_pred_valid = test_pred_valid[test_pred_valid['actual'] > 0]  # Avoid division by zero in MAPE
+        
+        if len(test_pred_valid) > 0:
+            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+            import numpy as np
+            
+            y_true = test_pred_valid['actual'].values
+            y_pred = test_pred_valid['forecast'].values
+            
+            model_mae = mean_absolute_error(y_true, y_pred)
+            model_rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+            model_mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+            model_r2 = r2_score(y_true, y_pred)
+
+    # -------- Executive Summary Panel --------
+    st.subheader("📊 Executive Summary Panel")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Total drugs tracked",
+            "10",
+            help="Number of top drugs being forecasted",
+        )
+
+    with col2:
+        total_forecast = forecast_data['rf_forecast'].sum()
+        st.metric(
+            "Total forecasted packages",
+            f"{total_forecast:.0f}",
+            help="Sum of forecasted packages across all top 10 drugs",
+        )
+
+    with col3:
+        if model_mae is not None:
+            st.metric(
+                "Test MAE",
+                f"{model_mae:.2f}",
+                help="Mean Absolute Error on test set (lower is better)",
+            )
+        else:
+            st.metric(
+                "Test MAE",
+                "N/A",
+                help="Test metrics not available",
+            )
+    
+    # Additional metrics row (only RMSE)
+    if model_rmse is not None:
+        st.markdown("<br/>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                "Test RMSE",
+                f"{model_rmse:.2f}",
+                help="Root Mean Squared Error on test set (lower is better)",
+            )
+        
+        with col2:
+            pass  # Empty column for spacing
+        
+        with col3:
+            pass  # Empty column for spacing
+
+    st.markdown("<hr/>", unsafe_allow_html=True)
+
+    # -------- Top 10 Drugs Forecast Table --------
+    st.subheader("📋 Top 10 Drugs Forecast Table")
+
+    # Calculate average consumption for each drug from historical data
+    avg_consumption = consumption_filtered.groupby('atc3_code')['packages'].mean().reset_index()
+    avg_consumption.columns = ['atc3_code', 'avg_consumption']
+
+    # Prepare forecast table
+    forecast_table = forecast_data.copy()
+    forecast_table['drug_name'] = forecast_table['atc3_code'].apply(get_atc3_description)
+    
+    # Merge average consumption
+    forecast_table = forecast_table.merge(avg_consumption, on='atc3_code', how='left')
+    
+    # Calculate change percentage against average, handling zero values
+    forecast_table['change_pct'] = forecast_table.apply(
+        lambda row: ((row['rf_forecast'] - row['avg_consumption']) / 
+                     (row['avg_consumption'] if row['avg_consumption'] != 0 else 1)) * 100,
+        axis=1
+    )
+    
+    def get_status_indicator(change_pct):
+        if change_pct > 5:
+            return "🟢 Increasing"
+        elif change_pct < -5:
+            return "🔴 Decreasing"
+        else:
+            return "🟡 Stable"
+
+    forecast_table['status'] = forecast_table['change_pct'].apply(get_status_indicator)
+    
+    # Sort by forecast value
+    forecast_table = forecast_table.sort_values('rf_forecast', ascending=False).reset_index(drop=True)
+    
+    # Create display table
+    display_table = forecast_table[['drug_name', 'atc3_code', 'avg_consumption', 'rf_forecast', 'change_pct', 'status']].copy()
+    display_table.columns = ['Drug Name', 'ATC3 Code', 'Average Consumption', 'Forecast', 'Change %', 'Status']
+    display_table['Average Consumption'] = display_table['Average Consumption'].round(1)
+    display_table['Forecast'] = display_table['Forecast'].round(1)
+    display_table['Change %'] = display_table['Change %'].round(1)
+
+    st.dataframe(
+        display_table.style.format({
+            'Average Consumption': '{:.1f}',
+            'Forecast': '{:.1f}',
+            'Change %': '{:.1f}%'
+        }).background_gradient(
+            subset=['Forecast'],
+            cmap='YlOrRd',
+            vmin=display_table['Forecast'].min(),
+            vmax=display_table['Forecast'].max(),
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("<hr/>", unsafe_allow_html=True)
+
+    # -------- Consumption Trends Visualization --------
+    st.subheader("📈 Consumption Trends Visualization")
+
+    # Prepare data for multi-line chart
+    colors_professional = [
+        "#38bdf8", "#22c55e", "#f97316", "#e879f9", "#a855f7",
+        "#06b6d4", "#f59e0b", "#ef4444", "#10b981", "#6366f1"
+    ]
+
+    fig_trends = go.Figure()
+
+    for idx, atc3_code in enumerate(top10_atc3_codes):
+        drug_data = consumption_filtered[consumption_filtered['atc3_code'] == atc3_code].sort_values('month_start')
+        drug_name = get_atc3_description(atc3_code)
+        
+        if len(drug_data) > 0:
+            fig_trends.add_trace(
+                go.Scatter(
+                    x=drug_data['month_start'],
+                    y=drug_data['packages'],
+                    mode='lines+markers',
+                    name=f"{atc3_code}: {drug_name}",
+                    line=dict(color=colors_professional[idx % len(colors_professional)], width=2),
+                    marker=dict(size=4),
+                    hovertemplate=f"<b>{atc3_code}: {drug_name}</b><br>Month: %{{x}}<br>Packages: %{{y}}<extra></extra>",
+                )
+            )
+
+    # Add forecast points
+    for idx, row in forecast_data.iterrows():
+        atc3_code = row['atc3_code']
+        drug_name = get_atc3_description(atc3_code)
+        color_idx = top10_atc3_codes.index(atc3_code) % len(colors_professional)
+        
+        fig_trends.add_trace(
+            go.Scatter(
+                x=[row['forecast_date']],
+                y=[row['rf_forecast']],
+                mode='markers',
+                name=f"{atc3_code} Forecast",
+                marker=dict(
+                    symbol='diamond',
+                    size=12,
+                    color=colors_professional[color_idx],
+                    line=dict(width=2, color='#111827')
+                ),
+                hovertemplate=f"<b>{atc3_code}: {drug_name} Forecast</b><br>Month: %{{x}}<br>Forecast: %{{y:.1f}}<extra></extra>",
+                showlegend=False,
+            )
+        )
+
+    fig_trends.update_layout(
+        title=dict(
+            text="<b>Historical Consumption Trends — Top 10 Drugs</b>",
+            font=dict(size=16, color=TEXT_PRIMARY),
+            x=0.5,
+        ),
+        xaxis=dict(
+            title=dict(text="<b>Month</b>", font=dict(size=12, color=TEXT_PRIMARY)),
+            tickfont=dict(size=11, color=TEXT_PRIMARY),
+            gridcolor=BORDER_COLOR,
+            gridwidth=1,
+            tickangle=-45,
+        ),
+        yaxis=dict(
+            title=dict(text="<b>Packages Consumed</b>", font=dict(size=12, color=TEXT_PRIMARY)),
+            tickfont=dict(size=11, color=TEXT_PRIMARY),
+            gridcolor=BORDER_COLOR,
+            gridwidth=1,
+        ),
+        plot_bgcolor=BG_CONTENT,
+        paper_bgcolor=BG_CONTENT,
+        font=dict(color=TEXT_PRIMARY),
+        hovermode='closest',
+        legend=dict(
+            font=dict(size=10, color=TEXT_PRIMARY),
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor=BORDER_COLOR,
+            borderwidth=1,
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01,
+        ),
+        height=600,
+        margin=dict(l=50, r=50, t=80, b=150),
+    )
+
+    st.plotly_chart(fig_trends, use_container_width=True, config={"displayModeBar": True})
+
+    st.markdown("<hr/>", unsafe_allow_html=True)
+
+    # -------- Individual Drug Drill-Down --------
+    st.subheader("🔍 Individual Drug Drill-Down")
+
+    selected_drug = st.selectbox(
+        "Select a drug to view detailed analysis",
+        options=top10_atc3_codes,
+        format_func=lambda x: f"{x} — {get_atc3_description(x)}",
+        key="drug_drilldown_select",
+    )
+
+    if selected_drug:
+        drug_data = consumption_filtered[consumption_filtered['atc3_code'] == selected_drug].sort_values('month_start')
+        drug_forecast = forecast_data[forecast_data['atc3_code'] == selected_drug].iloc[0]
+        drug_name = get_atc3_description(selected_drug)
+
+        st.markdown(
+            f"""
+            <div class="info-box" style="margin-bottom:1rem;">
+                <h4 style="margin-bottom:4px;">Drug Information</h4>
+                <p style="margin-bottom:2px;"><strong>ATC3 Code:</strong> {selected_drug}</p>
+                <p style="margin-bottom:0;"><strong>Description:</strong> {drug_name}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Determine train/test split at September 1, 2024 (matching notebook)
+        # Exclude January 2025 from test period
+        train_data = pd.DataFrame()
+        test_data = pd.DataFrame()
+        test_predictions = None
+        
+        if len(drug_data) > 0:
+            # Split at September 1, 2024, exclude January 2025 from test
+            split_date = pd.Timestamp('2024-09-01')
+            train_data = drug_data[drug_data['month_start'] < split_date].copy()
+            test_data = drug_data[
+                (drug_data['month_start'] >= split_date) & 
+                (drug_data['month_start'] < pd.Timestamp('2025-01-01'))
+            ].copy()
+            
+            # Try to load test predictions if available
+            # First try combined file for all top 10 drugs (RF + SARIMA Average)
+            combined_test_pred_path = Path("tsfdc/forecast_plots/test_predictions_all_top10.csv")
+            # Fallback to old XGBoost file name for backward compatibility
+            if not combined_test_pred_path.exists():
+                combined_test_pred_path = Path("tsfdc/forecast_plots/xgb_test_predictions_all_top10.csv")
+            
+            test_predictions = None
+            
+            if combined_test_pred_path.exists():
+                try:
+                    test_pred_df = pd.read_csv(combined_test_pred_path)
+                    # Filter by selected drug
+                    if 'atc3_code' in test_pred_df.columns:
+                        test_pred_df = test_pred_df[test_pred_df['atc3_code'] == selected_drug].copy()
+                    
+                    if len(test_pred_df) > 0:
+                        if 'month_start' in test_pred_df.columns:
+                            test_pred_df['month_start'] = pd.to_datetime(test_pred_df['month_start'])
+                        elif 'Month' in test_pred_df.columns:
+                            test_pred_df['Month'] = pd.to_datetime(test_pred_df['Month'])
+                            test_pred_df = test_pred_df.rename(columns={'Month': 'month_start'})
+                        elif 'Date' in test_pred_df.columns:
+                            test_pred_df['Date'] = pd.to_datetime(test_pred_df['Date'])
+                            test_pred_df = test_pred_df.rename(columns={'Date': 'month_start'})
+                        
+                        # Find prediction column (prioritize 'forecast' for RF+SARIMA avg, then fallback to others)
+                        pred_col = None
+                        for col in ['forecast', 'XGBoost', 'xgb_forecast', 'predicted', 'prediction', 'xgb_pred']:
+                            if col in test_pred_df.columns:
+                                pred_col = col
+                                break
+                        
+                        if pred_col:
+                            test_predictions = test_pred_df[['month_start', pred_col]].copy()
+                            test_predictions.columns = ['month_start', 'prediction']
+                            test_predictions = test_predictions.sort_values('month_start')
+                except Exception as e:
+                    test_predictions = None
+                    import sys
+                    print(f"Error loading combined test predictions: {e}", file=sys.stderr)
+            
+            # Fallback to individual file if combined file doesn't exist or didn't work
+            if test_predictions is None or len(test_predictions) == 0:
+                test_pred_path = Path(f"tsfdc/forecast_plots/test_predictions_{selected_drug}.csv")
+                if not test_pred_path.exists():
+                    # Try alternative naming (old XGBoost files)
+                    test_pred_path = Path(f"tsfdc/forecast_plots/xgb_test_predictions_{selected_drug}.csv")
+                
+                if test_pred_path.exists():
+                    try:
+                        test_pred_df = pd.read_csv(test_pred_path)
+                        if 'month_start' in test_pred_df.columns:
+                            test_pred_df['month_start'] = pd.to_datetime(test_pred_df['month_start'])
+                        elif 'Month' in test_pred_df.columns:
+                            test_pred_df['Month'] = pd.to_datetime(test_pred_df['Month'])
+                            test_pred_df = test_pred_df.rename(columns={'Month': 'month_start'})
+                        elif 'Date' in test_pred_df.columns:
+                            test_pred_df['Date'] = pd.to_datetime(test_pred_df['Date'])
+                            test_pred_df = test_pred_df.rename(columns={'Date': 'month_start'})
+                        
+                        # Find prediction column (XGBoost, xgb_forecast, or similar)
+                        pred_col = None
+                        for col in ['XGBoost', 'xgb_forecast', 'predicted', 'prediction', 'forecast', 'xgb_pred']:
+                            if col in test_pred_df.columns:
+                                pred_col = col
+                                break
+                        
+                        if pred_col:
+                            test_predictions = test_pred_df[['month_start', pred_col]].copy()
+                            test_predictions.columns = ['month_start', 'prediction']
+                            test_predictions = test_predictions.sort_values('month_start')
+                    except Exception as e:
+                        test_predictions = None
+                        import sys
+                        print(f"Error loading individual test predictions: {e}", file=sys.stderr)
+
+        # Show status if test predictions are available
+        if test_predictions is not None and len(test_predictions) > 0:
+            st.info(f"✓ Test predictions loaded (Forecasting): {len(test_predictions)} months available for comparison")
+
+        # Detailed chart
+        fig_drug = go.Figure()
+
+        # Training data (historical consumption before test period)
+        if len(train_data) > 0:
+            fig_drug.add_trace(
+                go.Scatter(
+                    x=train_data['month_start'],
+                    y=train_data['packages'],
+                    mode='lines+markers',
+                    name='Training Data',
+                    line=dict(color=ACCENT_PRIMARY, width=3),
+                    marker=dict(size=6, color=ACCENT_PRIMARY),
+                    hovertemplate="<b>Training</b><br>Month: %{x}<br>Packages: %{y}<extra></extra>",
+                )
+            )
+
+        # Test data (actual values)
+        if len(test_data) > 0:
+            fig_drug.add_trace(
+                go.Scatter(
+                    x=test_data['month_start'],
+                    y=test_data['packages'],
+                    mode='lines+markers',
+                    name='Test Period (Actual)',
+                    line=dict(color=ACCENT_WARNING, width=3, dash='dot'),
+                    marker=dict(size=8, color=ACCENT_WARNING, symbol='square'),
+                    hovertemplate="<b>Test Actual</b><br>Month: %{x}<br>Packages: %{y}<extra></extra>",
+                )
+            )
+
+        # Test predictions line (Forecasting - green line)
+        if test_predictions is not None and len(test_predictions) > 0:
+            fig_drug.add_trace(
+                go.Scatter(
+                    x=test_predictions['month_start'],
+                    y=test_predictions['prediction'],
+                    mode='lines+markers',
+                    name='Test Predictions (Forecasting)',
+                    line=dict(color=ACCENT_SECONDARY, width=3, dash='dash'),
+                    marker=dict(size=8, color=ACCENT_SECONDARY, symbol='triangle-up'),
+                    hovertemplate="<b>Test Prediction (Forecasting)</b><br>Month: %{x}<br>Predicted: %{y:.1f}<extra></extra>",
+                )
+            )
+
+        # Forecast point (future prediction)
+        fig_drug.add_trace(
+            go.Scatter(
+                x=[drug_forecast['forecast_date']],
+                y=[drug_forecast['rf_forecast']],
+                mode='markers',
+                name='Future Forecast (Forecasting)',
+                marker=dict(symbol='diamond', size=20, color=ACCENT_SECONDARY, line=dict(width=3, color='#111827')),
+                hovertemplate=f"<b>Future Forecast</b><br>Month: %{{x}}<br>Forecast: %{{y:.1f}}<extra></extra>",
+            )
+        )
+
+        # Add train/test split line at September 1, 2024 (matching notebook test period start)
+        split_date = pd.Timestamp('2024-09-01')
+        
+        # Get y-axis range for the line
+        all_y_values = []
+        if len(train_data) > 0:
+            all_y_values.extend(train_data['packages'].tolist())
+        if len(test_data) > 0:
+            all_y_values.extend(test_data['packages'].tolist())
+        if test_predictions is not None and len(test_predictions) > 0:
+            all_y_values.extend(test_predictions['prediction'].tolist())
+        if len(drug_data) > 0:
+            all_y_values.extend(drug_data['packages'].tolist())
+        
+        if all_y_values:
+            y_min = min(all_y_values) * 0.9
+            y_max = max(all_y_values) * 1.1
+            
+            fig_drug.add_shape(
+                type="line",
+                x0=split_date,
+                x1=split_date,
+                y0=y_min,
+                y1=y_max,
+                line=dict(color="#ef4444", width=2, dash="dash"),
+            )
+            fig_drug.add_annotation(
+                x=split_date,
+                y=y_max,
+                text="Train/Test Split (Sep 1, 2024)",
+                showarrow=False,
+                xanchor="left",
+                yanchor="bottom",
+                font=dict(size=10, color="#ef4444"),
+                bgcolor="rgba(239, 68, 68, 0.1)",
+                bordercolor="#ef4444",
+                borderwidth=1,
+            )
+
+        fig_drug.update_layout(
+            title=dict(
+                text=f"<b>Consumption Trend — {selected_drug} ({drug_name})</b>",
+                font=dict(size=16, color=TEXT_PRIMARY),
+                x=0.5,
+            ),
+            xaxis=dict(
+                title=dict(text="<b>Month</b>", font=dict(size=12, color=TEXT_PRIMARY)),
+                tickfont=dict(size=11, color=TEXT_PRIMARY),
+                gridcolor=BORDER_COLOR,
+                gridwidth=1,
+                tickangle=-45,
+            ),
+            yaxis=dict(
+                title=dict(text="<b>Packages Consumed</b>", font=dict(size=12, color=TEXT_PRIMARY)),
+                tickfont=dict(size=11, color=TEXT_PRIMARY),
+                gridcolor=BORDER_COLOR,
+                gridwidth=1,
+            ),
+            plot_bgcolor=BG_CONTENT,
+            paper_bgcolor=BG_CONTENT,
+            font=dict(color=TEXT_PRIMARY),
+            hovermode='closest',
+            legend=dict(
+                font=dict(size=11, color=TEXT_PRIMARY),
+                bgcolor="rgba(0,0,0,0)",
+                bordercolor=BORDER_COLOR,
+                borderwidth=1,
+            ),
+            height=500,
+            margin=dict(l=50, r=50, t=80, b=100),
+        )
+
+        st.plotly_chart(fig_drug, use_container_width=True, config={"displayModeBar": True})
+
+        # Model performance metrics (if available) - Calculate from test predictions
+        if test_predictions is not None and len(test_predictions) > 0:
+            try:
+                # Merge test predictions with actual values
+                test_pred_with_actual = test_predictions.merge(
+                    test_data[['month_start', 'packages']], 
+                    on='month_start', 
+                    how='inner'
+                )
+                test_pred_with_actual = test_pred_with_actual.rename(columns={'packages': 'actual'})
+                
+                # Filter out rows where actual is 0 or NaN (for MAPE calculation)
+                test_pred_valid = test_pred_with_actual[
+                    (test_pred_with_actual['actual'] > 0) & 
+                    (test_pred_with_actual['prediction'].notna())
+                ].copy()
+                
+                if len(test_pred_valid) > 0:
+                    from sklearn.metrics import mean_absolute_error, mean_squared_error
+                    import numpy as np
+                    
+                    y_true = test_pred_valid['actual'].values
+                    y_pred = test_pred_valid['prediction'].values
+                    
+                    test_mae = mean_absolute_error(y_true, y_pred)
+                    test_rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+                    test_mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+                    
+                    st.markdown("### Model Performance Metrics (Forecasting)")
+                    
+                    perf_col1, perf_col2, perf_col3 = st.columns(3)
+                    
+                    with perf_col1:
+                        st.metric("Test MAE", f"{test_mae:.2f}")
+                    with perf_col2:
+                        st.metric("Test RMSE", f"{test_rmse:.2f}")
+                    with perf_col3:
+                        st.metric("Test MAPE", f"{test_mape:.2f}%")
+            except Exception as e:
+                pass  # Silently fail if metrics can't be calculated
+
+    st.markdown("<hr/>", unsafe_allow_html=True)
+
+    # -------- Forecast Comparison Chart --------
+    st.subheader("📊 Forecast Comparison Chart")
+
+    # Merge average consumption into forecast data
+    forecast_sorted = forecast_data.merge(avg_consumption, on='atc3_code', how='left')
+    forecast_sorted = forecast_sorted.sort_values('rf_forecast', ascending=True).copy()
+    
+    # Color code by change direction (against average)
+    bar_colors = []
+    for _, row in forecast_sorted.iterrows():
+        avg_val = row['avg_consumption'] if row['avg_consumption'] != 0 else 1
+        change_pct = ((row['rf_forecast'] - row['avg_consumption']) / avg_val) * 100
+        if change_pct > 5:
+            bar_colors.append(ACCENT_SECONDARY)  # Green
+        elif change_pct < -5:
+            bar_colors.append(ACCENT_DANGER)  # Red
+        else:
+            bar_colors.append(ACCENT_WARNING)  # Yellow
+
+    fig_comparison = go.Figure()
+
+    # Forecast bars
+    fig_comparison.add_trace(
+        go.Bar(
+            x=[get_atc3_description(code) for code in forecast_sorted['atc3_code']],
+            y=forecast_sorted['rf_forecast'],
+            name='Ensemble Forecast',
+            marker=dict(color=bar_colors, line=dict(color='#111827', width=1.5)),
+            text=[f"{val:.1f}" for val in forecast_sorted['rf_forecast']],
+            textposition='outside',
+            hovertemplate="<b>%{x}</b><br>Forecast: %{y:.1f} packages<extra></extra>",
+        )
+    )
+
+    # Average consumption as reference line
+    fig_comparison.add_trace(
+        go.Scatter(
+            x=[get_atc3_description(code) for code in forecast_sorted['atc3_code']],
+            y=forecast_sorted['avg_consumption'],
+            mode='markers',
+            name='Average Consumption',
+            marker=dict(symbol='circle', size=10, color=TEXT_MUTED, line=dict(width=2, color='#111827')),
+            hovertemplate="<b>%{x}</b><br>Average: %{y:.1f} packages<extra></extra>",
+        )
+    )
+
+    fig_comparison.update_layout(
+        title=dict(
+            text="<b>Forecasted Consumption Comparison — Top 10 Drugs</b>",
+            font=dict(size=16, color=TEXT_PRIMARY),
+            x=0.5,
+        ),
+        xaxis=dict(
+            title=dict(text="<b>Drug</b>", font=dict(size=12, color=TEXT_PRIMARY)),
+            tickfont=dict(size=11, color=TEXT_PRIMARY),
+            gridcolor=BORDER_COLOR,
+            gridwidth=1,
+            tickangle=-45,
+        ),
+        yaxis=dict(
+            title=dict(text="<b>Packages</b>", font=dict(size=12, color=TEXT_PRIMARY)),
+            tickfont=dict(size=11, color=TEXT_PRIMARY),
+            gridcolor=BORDER_COLOR,
+            gridwidth=1,
+        ),
+        plot_bgcolor=BG_CONTENT,
+        paper_bgcolor=BG_CONTENT,
+        font=dict(color=TEXT_PRIMARY),
+        hovermode='closest',
+        barmode='overlay',
+        legend=dict(
+            font=dict(size=11, color=TEXT_PRIMARY),
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor=BORDER_COLOR,
+            borderwidth=1,
+        ),
+        height=500,
+        margin=dict(l=50, r=50, t=80, b=150),
+    )
+
+    st.plotly_chart(fig_comparison, use_container_width=True, config={"displayModeBar": True})
+
+    st.markdown("<hr/>", unsafe_allow_html=True)
+
+    # -------- Model Performance Dashboard --------
+    st.subheader("🤖 Model Performance Dashboard")
+
+    # Calculate aggregate performance metrics from test predictions
+    if test_predictions_all is not None and len(test_predictions_all) > 0:
+        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+        import numpy as np
+        
+        # Calculate metrics per drug
+        all_metrics = []
+        for atc3_code in top10_atc3_codes:
+            drug_test_pred = test_predictions_all[test_predictions_all['atc3_code'] == atc3_code].copy()
+            drug_test_pred = drug_test_pred.dropna(subset=['forecast', 'actual'])
+            drug_test_pred = drug_test_pred[drug_test_pred['actual'] > 0]  # Avoid division by zero
+            
+            if len(drug_test_pred) > 0:
+                y_true = drug_test_pred['actual'].values
+                y_pred = drug_test_pred['forecast'].values
+                
+                mae = mean_absolute_error(y_true, y_pred)
+                rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+                mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+                
+                all_metrics.append({
+                    'atc3_code': atc3_code,
+                    'drug_name': get_atc3_description(atc3_code),
+                    'MAE': mae,
+                    'RMSE': rmse,
+                    'MAPE': mape,
+                })
+
+        if all_metrics:
+            metrics_df_agg = pd.DataFrame(all_metrics)
+            
+            st.markdown("### Ensemble Model Performance Summary")
+            
+            agg_col1, agg_col2 = st.columns(2)
+            
+            with agg_col1:
+                avg_mae = metrics_df_agg['MAE'].mean()
+                st.metric("Average MAE", f"{avg_mae:.2f}", help="Mean Absolute Error across all drugs")
+            
+            with agg_col2:
+                avg_rmse = metrics_df_agg['RMSE'].mean()
+                st.metric("Average RMSE", f"{avg_rmse:.2f}", help="Root Mean Squared Error across all drugs")
+
+            # Performance by drug table
+            st.markdown("### Performance Metrics by Drug")
+            
+            display_metrics = metrics_df_agg[['drug_name', 'atc3_code', 'MAE', 'RMSE']].copy()
+            display_metrics.columns = ['Drug Name', 'ATC3 Code', 'MAE', 'RMSE']
+            display_metrics = display_metrics.sort_values('MAE', ascending=True).reset_index(drop=True)
+            display_metrics['MAE'] = display_metrics['MAE'].round(2)
+            display_metrics['RMSE'] = display_metrics['RMSE'].round(2)
+            
+            st.dataframe(
+                display_metrics.style.format({
+                    'MAE': '{:.2f}',
+                    'RMSE': '{:.2f}'
+                }).background_gradient(
+                    subset=['MAE'],
+                    cmap='RdYlGn_r',  # Reversed: green is better (lower MAE)
+                    vmin=display_metrics['MAE'].min(),
+                    vmax=display_metrics['MAE'].max(),
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+    else:
+        st.info("Model performance metrics are not available. Test predictions data is required to calculate metrics.")
+
+    st.markdown("<hr/>", unsafe_allow_html=True)
+
+    # -------- Consumption Heatmap/Comparison --------
+    st.subheader("🔥 Consumption Heatmap")
+
+    # Prepare heatmap data
+    heatmap_data = consumption_filtered.pivot_table(
+        index='atc3_code',
+        columns='month_start',
+        values='packages',
+        aggfunc='sum'
+    )
+
+    # Sort by ATC3 code order from top 10
+    heatmap_data = heatmap_data.reindex([code for code in top10_atc3_codes if code in heatmap_data.index])
+
+    # Create heatmap
+    fig_heatmap = go.Figure(data=go.Heatmap(
+        z=heatmap_data.values,
+        x=[str(col)[:7] for col in heatmap_data.columns],  # Format dates
+        y=[f"{idx} — {get_atc3_description(idx)}" for idx in heatmap_data.index],
+        colorscale='YlOrRd',
+        colorbar=dict(
+            title=dict(
+                text="Packages",
+                font=dict(size=12, color=TEXT_PRIMARY),
+            ),
+            tickfont=dict(size=10, color=TEXT_PRIMARY),
+        ),
+        hovertemplate="<b>%{y}</b><br>Month: %{x}<br>Packages: %{z}<extra></extra>",
+    ))
+
+    fig_heatmap.update_layout(
+        title=dict(
+            text="<b>Consumption Heatmap — Top 10 Drugs Over Time</b>",
+            font=dict(size=16, color=TEXT_PRIMARY),
+            x=0.5,
+        ),
+        xaxis=dict(
+            title=dict(text="<b>Month</b>", font=dict(size=12, color=TEXT_PRIMARY)),
+            tickfont=dict(size=10, color=TEXT_PRIMARY),
+            tickangle=-45,
+        ),
+        yaxis=dict(
+            title=dict(text="<b>Drug (ATC3 Code)</b>", font=dict(size=12, color=TEXT_PRIMARY)),
+            tickfont=dict(size=10, color=TEXT_PRIMARY),
+        ),
+        plot_bgcolor=BG_CONTENT,
+        paper_bgcolor=BG_CONTENT,
+        font=dict(color=TEXT_PRIMARY),
+        height=600,
+        margin=dict(l=200, r=50, t=80, b=150),
+    )
+
+    st.plotly_chart(fig_heatmap, use_container_width=True, config={"displayModeBar": True})
 
 # -----------------------------------------------------------------------------
 # FOOTER

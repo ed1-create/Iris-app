@@ -1,0 +1,2 @@
+atc3_code,forecast_date,XGBoost_forecast,Random Forest_forecast,Linear Regression_forecast,Prophet_forecast,SARIMA_forecast,average_forecast
+C09B,2025-02-01,103.191414,89.38,83.66334088309895,95.03493882303596,107.62114105184833,95.77816692747555
